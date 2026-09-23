@@ -4,21 +4,48 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted, watch } from 'vue'
+import { ref, onMounted, onUnmounted } from 'vue'
 import { useSkyStore } from '../store/sky'
+import { normalizedToScreen } from '../pipeline/astronomy'
 
 const store = useSkyStore()
 const canvasRef = ref<HTMLCanvasElement | null>(null)
 let animId = 0
 
-function draw() {
+/** 回放每帧停留 450ms（固定节奏推进，位置全部读取自已保存的管线帧） */
+const FRAME_INTERVAL_MS = 450
+let lastStepAt = 0
+
+function framePos(index: number, cx: number, cy: number, scale: number): [number, number] {
+  const frame = store.currentFrame
+  if (frame) return store.frameStarScreen(index, cx, cy, scale)
+  const star = store.STARS[index]
+  return store.projectStar(star.ra, star.dec, cx, cy, scale)
+}
+
+function draw(now: number) {
+  animId = requestAnimationFrame(draw)
+
+  // 回放节拍：到点顺序读取下一帧（不重算）
+  if (store.playing) {
+    if (!lastStepAt) lastStepAt = now
+    if (now - lastStepAt >= FRAME_INTERVAL_MS) {
+      lastStepAt = now
+      store.stepReplay(1)
+    }
+  } else {
+    lastStepAt = 0
+  }
+
   const canvas = canvasRef.value
-  if (!canvas) { animId = requestAnimationFrame(draw); return }
+  if (!canvas) return
   const ctx = canvas.getContext('2d')!
   const w = canvas.width = canvas.offsetWidth * 2
   const h = canvas.height = canvas.offsetHeight * 2
   const cx = w / 2, cy = h / 2
   const scale = Math.min(w, h) * store.zoom
+  const frame = store.currentFrame
+  const baseline = store.baselineFrame
 
   // background
   ctx.fillStyle = '#000814'
@@ -34,7 +61,7 @@ function draw() {
     ctx.fill()
   }
 
-  // grid
+  // grid（回放态网格也使用当前帧时刻重投 —— 网格不落盘；星体位置才是管线复用对象）
   if (store.showGrid) {
     ctx.strokeStyle = 'rgba(100,100,200,0.15)'
     ctx.lineWidth = 1
@@ -64,9 +91,8 @@ function draw() {
     ctx.lineWidth = 1.5
     for (const c of store.CONSTELLATIONS) {
       for (const [i, j] of c.lines) {
-        const s1 = store.STARS[i], s2 = store.STARS[j]
-        const [x1, y1] = store.projectStar(s1.ra, s1.dec, cx, cy, scale)
-        const [x2, y2] = store.projectStar(s2.ra, s2.dec, cx, cy, scale)
+        const [x1, y1] = framePos(i, cx, cy, scale)
+        const [x2, y2] = framePos(j, cx, cy, scale)
         if (x1 < -500 || x2 < -500) continue
         ctx.beginPath()
         ctx.moveTo(x1, y1)
@@ -76,9 +102,10 @@ function draw() {
     }
   }
 
-  // stars
-  for (const star of store.STARS) {
-    const [x, y] = store.projectStar(star.ra, star.dec, cx, cy, scale)
+  // stars —— 回放态位置来自管线帧（读取），自由态按当前时刻现算
+  for (let i = 0; i < store.STARS.length; i++) {
+    const star = store.STARS[i]
+    const [x, y] = framePos(i, cx, cy, scale)
     if (x < -500 || x > w + 500 || y < -500 || y > h + 500) continue
     const radius = store.starRadius(star.mag)
     const color = store.spectralColor(star.spectral)
@@ -106,6 +133,37 @@ function draw() {
     }
   }
 
+  // 两时刻差异：从基准帧位置指向当前帧位置的位移向量
+  if (frame && baseline && store.currentDiff) {
+    const deltaByIdx = new Map(store.currentDiff.deltas.map(d => [d.index, d]))
+    for (let i = 0; i < store.STARS.length; i++) {
+      const delta = deltaByIdx.get(i)
+      const curFs = frame.stars[i]
+      const baseFs = baseline.stars[i]
+      if (!delta || !delta.bothVisible || !curFs.visible || !baseFs.visible) continue
+      const [x1, y1] = normalizedToScreen(baseFs, cx, cy, scale, store.panX, store.panY)
+      const [x2, y2] = normalizedToScreen(curFs, cx, cy, scale, store.panX, store.panY)
+      if (x1 < -500 || x2 < -500) continue
+      const intensity = Math.min(1, delta.angularDeg / 15)
+      ctx.strokeStyle = `rgba(255,${Math.round(120 - 120 * intensity)},60,0.85)`
+      ctx.lineWidth = 2
+      ctx.beginPath()
+      ctx.moveTo(x1, y1)
+      ctx.lineTo(x2, y2)
+      ctx.stroke()
+      // 箭头头部
+      const ang = Math.atan2(y2 - y1, x2 - x1)
+      const ah = 6
+      ctx.beginPath()
+      ctx.moveTo(x2, y2)
+      ctx.lineTo(x2 - ah * Math.cos(ang - 0.4), y2 - ah * Math.sin(ang - 0.4))
+      ctx.lineTo(x2 - ah * Math.cos(ang + 0.4), y2 - ah * Math.sin(ang + 0.4))
+      ctx.closePath()
+      ctx.fillStyle = `rgba(255,${Math.round(120 - 120 * intensity)},60,0.85)`
+      ctx.fill()
+    }
+  }
+
   // horizon
   ctx.strokeStyle = 'rgba(0,200,100,0.3)'
   ctx.lineWidth = 2
@@ -125,14 +183,22 @@ function draw() {
     ctx.fillStyle = 'rgba(100,180,255,0.8)'
     ctx.font = `bold ${12 * store.zoom}px system-ui`
     for (const c of store.CONSTELLATIONS) {
-      const midStar = store.STARS[c.stars[0]]
-      const [x, y] = store.projectStar(midStar.ra, midStar.dec, cx, cy, scale)
+      const [x, y] = framePos(c.stars[0], cx, cy, scale)
       if (x < -500) continue
       ctx.fillText(c.nameCn, x - 20, y - 15 * store.zoom)
     }
   }
 
-  animId = requestAnimationFrame(draw)
+  // 回放状态角标
+  if (frame) {
+    ctx.fillStyle = 'rgba(147,197,253,0.9)'
+    ctx.font = '13px system-ui'
+    ctx.fillText(
+      `管线回放 帧 ${store.currentFrameIndex + 1}/${store.pipeline?.frames.length ?? 0}` +
+      `${store.playing ? ' ▶' : ' ⏸'}`,
+      16, 24,
+    )
+  }
 }
 
 function onClick(e: MouseEvent) {
@@ -149,6 +215,6 @@ function onWheel(e: WheelEvent) {
   store.zoom = Math.max(0.3, Math.min(3, store.zoom + (e.deltaY > 0 ? -0.1 : 0.1)))
 }
 
-onMounted(() => draw())
+onMounted(() => { animId = requestAnimationFrame(draw) })
 onUnmounted(() => cancelAnimationFrame(animId))
 </script>

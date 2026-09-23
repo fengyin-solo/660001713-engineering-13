@@ -234,3 +234,6 @@ sandbox/
 *.pid
 *.seed
 *.pid.lock
+
+# 时间管线本地帧缓存（构建时生成，回放用）
+frontend/.pipeline-cache/

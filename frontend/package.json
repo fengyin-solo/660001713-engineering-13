@@ -3,7 +3,7 @@
   "private": true,
   "version": "1.0.0",
   "type": "module",
-  "scripts": { "dev": "vite", "build": "vue-tsc && vite build", "preview": "vite preview" },
+  "scripts": { "dev": "vite", "verify:pipeline": "node scripts/verify-pipeline.mjs", "prebuild": "node scripts/verify-pipeline.mjs", "build": "vue-tsc && vite build", "preview": "vite preview" },
   "dependencies": { "vue": "^3.4.5", "pinia": "^2.1.7" },
   "devDependencies": {
     "@vitejs/plugin-vue": "^4.5.2", "typescript": "^5.3.3",
