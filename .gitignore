@@ -234,3 +234,7 @@ sandbox/
 *.pid
 *.seed
 *.pid.lock
+
+# Generated time pipeline frames (built by scripts/verify-pipeline.ts)
+frontend/public/time-pipeline/
+frontend/node_modules/.cache/
